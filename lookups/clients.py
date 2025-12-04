@@ -1,0 +1,21 @@
+clients = [
+    {
+        "client_id":"chris_lok",
+        "model_gen":[
+            "maz3_3",
+            "civic_7",
+        ],
+        "listed_min":10_000,
+        "listed_max":17_000,
+        "odometer_max":150,
+    },{
+        "client_id":"anita_chu",
+        "model_gen":[
+            "civic_7",
+            "jazz_3",
+        ],
+        "listed_min":4_000,
+        "listed_max":15_000,
+        "odometer_max":200
+    }
+]
