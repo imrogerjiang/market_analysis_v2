@@ -6,29 +6,54 @@ from __future__ import annotations
 import argparse
 import csv
 import datetime as _dt
+import sys
+from collections import defaultdict
 from pathlib import Path
-from typing import Dict, Iterable, List, Tuple
+from typing import DefaultDict, Dict, Iterable, List, Optional, Tuple
 
 LookupKey = Tuple[str, str]
+GenRange = Tuple[int, int, str]
 
 
-def load_gen_lookup(path: Path) -> Dict[LookupKey, str]:
-    """Load generation data indexed by (make, model) in lower case."""
-    lookup: Dict[LookupKey, str] = {}
+DEFAULT_GEN_LOOKUP_PATH = Path("lookups/gen_lookups.csv")
+
+
+def parse_year(value: str) -> Optional[int]:
+    value = value.strip()
+    if value.isdigit():
+        return int(value)
+    return None
+
+
+def load_gen_lookup(path: Path) -> Dict[LookupKey, List[GenRange]]:
+    """Load generation ranges indexed by (make, model) in lower case."""
+    lookup: DefaultDict[LookupKey, List[GenRange]] = defaultdict(list)
 
     with path.open(newline="", encoding="utf-8") as f:
         reader = csv.DictReader(f)
         if not reader.fieldnames:
-            raise ValueError("gen_lookup.csv must have a header row")
+            raise ValueError("gen_lookups.csv must have a header row")
 
         for row in reader:
             make = (row.get("make") or "").strip().lower()
             model = (row.get("model") or "").strip().lower()
             gen = (row.get("gen") or "").strip()
-            if make and model and gen:
-                lookup[(make, model)] = gen
+            year_start = parse_year(row.get("year_start") or "")
+            year_end = parse_year(row.get("year_end") or "")
 
-    return lookup
+            if not (make and model and gen):
+                continue
+
+            if year_start is None or year_end is None:
+                continue
+
+            lookup[(make, model)].append((year_start, year_end, gen))
+
+    # Sort to provide predictable matching when no range aligns (use earliest first)
+    for key, ranges in lookup.items():
+        lookup[key] = sorted(ranges, key=lambda r: (r[0], r[1]))
+
+    return dict(lookup)
 
 
 def model_gen_value(model: str, gen: str) -> str:
@@ -41,9 +66,27 @@ def model_gen_value(model: str, gen: str) -> str:
     return ""
 
 
+def match_generation(
+    gen_lookup: Dict[LookupKey, List[GenRange]], make: str, model: str, year: Optional[str]
+) -> str:
+    key = (make.strip().lower(), model.strip().lower())
+    ranges = gen_lookup.get(key, [])
+    if not ranges:
+        return ""
+
+    parsed_year = parse_year(year or "") if year else None
+    if parsed_year is not None:
+        for start, end, gen in ranges:
+            if start <= parsed_year <= end:
+                return gen
+
+    # If no year match, fall back to the most recent generation
+    return ranges[-1][2]
+
+
 def enrich_rows(
     rows: Iterable[dict],
-    gen_lookup: Dict[LookupKey, str],
+    gen_lookup: Dict[LookupKey, List[GenRange]],
     marketplace: str,
     scrape_date: str,
 ) -> List[dict]:
@@ -52,9 +95,9 @@ def enrich_rows(
     for row in rows:
         make_raw = row.get("make") or ""
         model_raw = row.get("model") or ""
+        year_raw = row.get("year") or ""
 
-        key = (make_raw.strip().lower(), model_raw.strip().lower())
-        gen = gen_lookup.get(key, "")
+        gen = match_generation(gen_lookup, make_raw, model_raw, year_raw)
 
         row = dict(row)  # copy to avoid mutating input
         row["gen"] = gen
@@ -109,7 +152,13 @@ def process_listings(
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Enrich cleaned listings with generation metadata")
     parser.add_argument("input_csv", type=Path, help="Cleaned listings CSV to enrich")
-    parser.add_argument("gen_lookup", type=Path, help="CSV containing make/model to gen mapping")
+    parser.add_argument(
+        "gen_lookup",
+        type=Path,
+        nargs="?",
+        default=DEFAULT_GEN_LOOKUP_PATH,
+        help=f"CSV containing make/model to gen mapping (default: {DEFAULT_GEN_LOOKUP_PATH})",
+    )
     parser.add_argument("marketplace", choices=["fb", "cs"], help="Marketplace code (fb or cs)")
     parser.add_argument(
         "output_csv",
